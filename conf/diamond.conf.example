@@ -139,6 +139,7 @@ batch = 100
 topic = projects/your-project/topics/your-topic
 scopes = https://www.googleapis.com/auth/pubsub
 retries = 3
+max_queue_size = 100000
 batch = count
 batch_size = 10
 tags = key1: value1, key2: value2
@@ -213,6 +214,10 @@ enabled = True
 [[VMStatCollector]]
 enabled = True
 
+[[LoadtestCollector]]
+enabled = True
+mpm = 10000
+
 ################################################################################
 ### Options for logging
 # for more information on file format syntax:
@@ -239,11 +244,10 @@ propagate = 1
 
 [handler_rotated_file]
 
-class = handlers.TimedRotatingFileHandler
+class = handlers.RotatingFileHandler
 level = DEBUG
 formatter = default
-# rotate at midnight, each day and keep 7 days
-args = ('/var/log/diamond/diamond.log', 'midnight', 1, 7)
+args = ('/var/log/diamond/diamond.log', 'a', 10000000, 10)
 
 [formatter_default]
 
