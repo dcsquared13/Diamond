@@ -2,7 +2,7 @@
 # coding=utf-8
 ##########################################################################
 
-from test import unittest
+import unittest
 
 from diamond.metric import Metric
 
