@@ -26,7 +26,7 @@ Author: dcochran@google.com
 
 #### Configuration
 
-Add `diamond.handler.stackdriver.StackdriverHandler` to your handlers.
+Add `diamond.handler.stackdriver.StackdriverAWSHandler` to your handlers.
 It has these options:
 
  * `gateway` - The stackdriver gateway url.
