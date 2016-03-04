@@ -93,7 +93,7 @@ class StackdriverAWSHandler(Handler):
         data_point = {'name': metric.path, 'value': metric.value,
                       'collected_at': metric.timestamp, 'instance': self.instance_id}
 
-        logging.debug("Datapoint to be sent: {}".format(data_point))
+        logging.debug("Data point to be sent: {}".format(data_point))
 
         self._send(data_point)
 
@@ -108,7 +108,7 @@ class StackdriverAWSHandler(Handler):
             'data': data_point,
         }
         resp = requests.post(
-            'https://custom-gateway.stackdriver.com/v1/custom',
+            self.gateway,
             data=json.dumps(gateway_msg),
             headers=headers)
 
