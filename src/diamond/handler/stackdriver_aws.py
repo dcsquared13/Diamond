@@ -90,13 +90,8 @@ class StackdriverAWSHandler(Handler):
         # data_point = { 'name': name, 'value': value, 'collected_at': int(time.time()), 'instance': 'i-xxxxxxxx' }
         logging.debug("Metric received: {}".format(metric))
 
-        if metric['time'] == '' or metric['time'] <= 0 or metric['time'] is None:
-            c_time = int(time.time())
-        else:
-            c_time = metric['time']
-
-        data_point = {'name': metric['service'], 'value': metric['metric'],
-                      'collected_at': c_time, 'instance': self.instance_id}
+        data_point = {'name': metric.path, 'value': metric.value,
+                      'collected_at': metric.timestamp, 'instance': self.instance_id}
 
         logging.debug("Data point to be sent: {}".format(data_point))
 
