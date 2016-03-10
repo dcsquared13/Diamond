@@ -89,13 +89,20 @@ class StackdriverAWSHandler(Handler):
         """
         # data_point = { 'name': name, 'value': value, 'collected_at': int(time.time()), 'instance': 'i-xxxxxxxx' }
         logging.debug("Metric received: {}".format(metric))
-
-        data_point = {'name': metric.path, 'value': metric.value,
-                      'collected_at': metric.timestamp, 'instance': self.instance_id}
-
+        data_point = self._metric_to_stackdriver_event(metric)
         logging.debug("Data point to be sent: {}".format(data_point))
 
         self._send(data_point)
+
+    def _metric_to_stackdriver_event(self, metric):
+        path = '%s.%s' % (metric.getCollectorPath(),
+                metric.getMetricPath())
+        return {
+            'name': path,
+            'value': metric.value,
+            'collected_at': metric.timestamp,
+            'instance': self.instance_id,
+        }
 
     def _send(self, data_point):
         headers = {
