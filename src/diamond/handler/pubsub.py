@@ -56,6 +56,7 @@ import logging
 import base64
 import json
 import Queue
+import time
 
 try:
     from apiclient import discovery
@@ -88,6 +89,7 @@ class PubsubHandler(Handler):
         self.batch = self.config['batch']
         self.batch_size = int(self.config['batch_size'])
         self.max_queue_size = int(self.config['max_queue_size'])
+        self.max_queue_time = int(self.config['max_queue_time'])
         tags_items = self.config['tags']
         self.tags = {}
         if tags_items is not None and len(tags_items) > 0:
@@ -109,6 +111,7 @@ class PubsubHandler(Handler):
 
         # Initialize Queue
         self.q = Queue.Queue(self.max_queue_size)
+        self.last_q_push = None
 
         # Initialize client
         credentials = GoogleCredentials.get_application_default()
@@ -130,6 +133,7 @@ class PubsubHandler(Handler):
             'batch': 'Should msgs be batched.  Values: None, count, or size',
             'batch_size': 'If batch msgs, will contain the count number or size'
                           ' in bytes',
+            'max_queue_time': 'Max time a msg should stay in the queue in seconds',
             'tags': 'Comma separated free-form field to hold additional'
                     ' key/value pairs to be sent.',
         })
@@ -149,6 +153,7 @@ class PubsubHandler(Handler):
             'max_queue_size': 100000,
             'batch': None,
             'batch_size': 0,
+            'max_queue_time': 120,
             'tags': ''
         })
 
@@ -159,6 +164,17 @@ class PubsubHandler(Handler):
         Process a metric by sending it to pub/sub
         :param metric: metric to process
         """
+        if self.last_q_push is not None:
+            # Make sure messages in queue are not staying past the max
+            # time they should.
+            current_time = int(time.time())
+            if current_time > self.last_q_push + self.max_queue_time:
+                logging.info("Max queue time reached...pushing metrics.  "
+                              "Current time {}, Last push time {}, "
+                              "Max queue time {}".format(current_time,
+                                                         self.last_q_push,
+                                                         self.max_queue_time))
+                self._send(self.q.qsize())
 
         if self.batch is None:
             # each metric sent as it comes in
@@ -243,6 +259,7 @@ class PubsubHandler(Handler):
             self.msg_total_size = 0
             # clear list
             del metrics[:]
+            self.last_q_push = int(time.time())
         except Queue.Empty:
             logging.warn("Queue Empty caught")
             pass

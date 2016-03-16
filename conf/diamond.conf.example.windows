@@ -127,6 +127,7 @@ topic = projects/your-project/topics/your-topic
 scopes = https://www.googleapis.com/auth/pubsub
 retries = 3
 max_queue_size = 100000
+max_queue_time = 60
 batch = count
 batch_size = 10
 tags = key1: value1, key2: value2
