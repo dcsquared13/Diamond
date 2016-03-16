@@ -13,11 +13,12 @@ class Metric(object):
     # handlers to flush.
     __slots__ = [
         'path', 'value', 'raw_value', 'timestamp', 'precision',
-        'host', 'metric_type', 'ttl', 'tags'
+        'host', 'metric_type', 'ttl', 'tags', 'collector'
         ]
 
     def __init__(self, path, value, raw_value=None, timestamp=None, precision=0,
-                 host=None, metric_type='COUNTER', ttl=None, tags=None):
+                 host=None, metric_type='COUNTER', ttl=None, tags=None,
+                 collector=None):
         """
         Create new instance of the Metric class
 
@@ -70,6 +71,7 @@ class Metric(object):
         self.metric_type = metric_type
         self.ttl = ttl
         self.tags = tags
+        self.collector = collector
 
     def __repr__(self):
         """
