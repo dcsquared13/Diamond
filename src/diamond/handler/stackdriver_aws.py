@@ -32,6 +32,7 @@ It has these options:
  * `gateway` - The stackdriver gateway url.
  * `apikey` - Stackdriver api key.
  * `instance_id` - AWS instance id
+ * `blacklist` - List of collectors to blacklist.
 
 """
 
@@ -53,6 +54,15 @@ class StackdriverAWSHandler(Handler):
         self.gateway = self.config['gateway']
         self.apikey = self.config['apikey']
         self.instance_id = self.config['instance_id']
+        self.blacklist = []
+        if self.config['blacklist'] is not None and self.config['blacklist'] != '':
+            if type(self.config['blacklist']) is not list:
+                self.log.debug("Converting blacklist to list")
+                self.blacklist.append(self.config['blacklist'])
+            else:
+                self.blacklist = self.config['blacklist']
+        else:
+            self.blacklist = None
 
     def get_default_config_help(self):
         """
@@ -63,7 +73,8 @@ class StackdriverAWSHandler(Handler):
         config.update({
             'gateway': 'Stackdriver gateway',
             'apikey': 'Stackdriver api key',
-            'instance_id': 'AWS Instance ID'
+            'instance_id': 'AWS Instance ID',
+            'blacklist': 'Blacklist of collectors to not process',
         })
 
         return config
@@ -77,7 +88,8 @@ class StackdriverAWSHandler(Handler):
         config.update({
             'gateway': 'https://custom-gateway.stackdriver.com/v1/custom',
             'apikey': None,
-            'instance_id': None
+            'instance_id': None,
+            'blacklist': None,
         })
 
         return config
@@ -87,14 +99,20 @@ class StackdriverAWSHandler(Handler):
         Process an AWS metric by sending it to stackdriver
         :param metric: metric to process
         """
-        # data_point = { 'name': name, 'value': value, 'collected_at': int(time.time()), 'instance': 'i-xxxxxxxx' }
         logging.debug("Metric received: {}".format(metric))
         data_point = self._metric_to_stackdriver_event(metric)
-        logging.debug("Data point to be sent: {}".format(data_point))
-
-        self._send(data_point)
+        if self.blacklist is not None:
+            if metric.collector not in self.blacklist:
+                logging.debug("Data point to be sent: {}".format(data_point))
+                self._send(data_point)
+            else:
+                logging.debug("{} collector in blacklist so dropping metric: {}".format(metric.collector, metric))
+        else:
+            logging.debug("Data point to be sent: {}".format(data_point))
+            self._send(data_point)
 
     def _metric_to_stackdriver_event(self, metric):
+        # data_point = { 'name': name, 'value': value, 'collected_at': int(time.time()), 'instance': 'i-xxxxxxxx' }
         path = '%s.%s' % (metric.getCollectorPath(),
                 metric.getMetricPath())
         return {
