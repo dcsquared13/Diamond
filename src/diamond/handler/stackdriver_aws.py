@@ -55,14 +55,13 @@ class StackdriverAWSHandler(Handler):
         self.apikey = self.config['apikey']
         self.instance_id = self.config['instance_id']
         self.blacklist = []
-        if self.config['blacklist'] is not None and self.config['blacklist'] != '':
+        if self.config['blacklist']:
             if type(self.config['blacklist']) is not list:
-                self.log.debug("Converting blacklist to list")
+                logging.debug("Converting blacklist {} to list".format(self.config['blacklist']))
                 self.blacklist.append(self.config['blacklist'])
             else:
+                logging.debug("Blacklist passed in as list.")
                 self.blacklist = self.config['blacklist']
-        else:
-            self.blacklist = None
 
     def get_default_config_help(self):
         """
@@ -101,7 +100,8 @@ class StackdriverAWSHandler(Handler):
         """
         logging.debug("Metric received: {}".format(metric))
         data_point = self._metric_to_stackdriver_event(metric)
-        if self.blacklist is not None:
+        if self.blacklist:
+            logging.debug("Blacklist {} found processing metrics".format(self.blacklist))
             if metric.collector not in self.blacklist:
                 logging.debug("Data point to be sent: {}".format(data_point))
                 self._send(data_point)
