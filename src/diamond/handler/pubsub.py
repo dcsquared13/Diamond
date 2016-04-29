@@ -219,17 +219,10 @@ class PubsubHandler(Handler):
         Convert a metric to a dictionary representing a Pub/Sub event.
         Each metric should be loaded into a separate data slot
         """
-        # Using separate "host" field, so remove from the path.
-        # This was taken from the Riemann Handler.
-        path = '%s.%s.%s' % (
-            metric.getPathPrefix(),
-            metric.getCollectorPath(),
-            metric.getMetricPath()
-        )
 
         payload = {
             'host': metric.host,
-            'service': path,
+            'service': metric.path,
             'time': metric.timestamp,
             'metric': float(metric.value),
             'ttl': metric.ttl,
