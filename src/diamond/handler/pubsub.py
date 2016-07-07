@@ -219,7 +219,7 @@ class PubsubHandler(Handler):
         Convert a metric to a dictionary representing a Pub/Sub event.
         Each metric should be loaded into a separate data slot
         """
-
+        self.tags['keyspace'] = metric.getCollectorPath() + '.' + metric.getMetricPath()
         payload = {
             'host': metric.host,
             'service': metric.path,
