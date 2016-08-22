@@ -90,6 +90,7 @@ class PubsubHandler(Handler):
         self.batch_size = int(self.config['batch_size'])
         self.max_queue_size = int(self.config['max_queue_size'])
         self.max_queue_time = int(self.config['max_queue_time'])
+        self.msgs_to_cull = int(self.config['msgs_to_cull'])
         tags_items = self.config['tags']
         self.tags = {}
         if tags_items is not None and len(tags_items) > 0:
@@ -98,8 +99,7 @@ class PubsubHandler(Handler):
                 self.tags[k] = v
 
         # vars for batch processing by size
-        self.msg_count = 0
-        self.msg_total_size = 0
+        self.avg_msg_size = 0
 
         # make sure the number of messages tried does not exceed
         # the message size limit.  1000 is the hard limit.
@@ -111,7 +111,14 @@ class PubsubHandler(Handler):
 
         # Initialize Queue
         self.q = Queue.Queue(self.max_queue_size)
-        self.last_q_push = None
+        self.last_q_push = int(time.time())
+        self.time_to_wait = 0
+
+        # Back-off vars
+        self.backoff_enable = False
+        self.backoff_current_fib = 1
+        self.backoff_max_fib = int(self.config['max_fibonacci'])
+        self.safe_push = int(self.config['safe_push'])
 
         # Initialize client
         credentials = GoogleCredentials.get_application_default()
@@ -134,6 +141,9 @@ class PubsubHandler(Handler):
             'batch_size': 'If batch msgs, will contain the count number or size'
                           ' in bytes',
             'max_queue_time': 'Max time a msg should stay in the queue in seconds',
+            'max_fibonacci': 'Max value used to generate fibonacci number',
+            'safe_push': 'Min secs between pushes to Pub/Sub',
+            'msgs_to_cull': 'Number of msgs to remove from send window for overhead',
             'tags': 'Comma separated free-form field to hold additional'
                     ' key/value pairs to be sent.',
         })
@@ -154,6 +164,9 @@ class PubsubHandler(Handler):
             'batch': None,
             'batch_size': 0,
             'max_queue_time': 120,
+            'max_fibonacci': 10,
+            'safe_push': 6,
+            'msgs_to_cull': 5,
             'tags': ''
         })
 
@@ -164,53 +177,80 @@ class PubsubHandler(Handler):
         Process a metric by sending it to pub/sub
         :param metric: metric to process
         """
-        if self.last_q_push is not None:
-            # Make sure messages in queue are not staying past the max
-            # time they should.
-            current_time = int(time.time())
-            if current_time > self.last_q_push + self.max_queue_time:
-                logging.info("Max queue time reached...pushing metrics.  "
-                              "Current time {}, Last push time {}, "
-                              "Max queue time {}".format(current_time,
-                                                         self.last_q_push,
-                                                         self.max_queue_time))
-                self._send(self.q.qsize())
-
-        if self.batch is None:
-            # each metric sent as it comes in
-            self._add_to_queue(self._convert_to_pubsub(metric))
-            self._send(1)
-        else:
-            if self.batch == 'count':
-                # batch up by number of msgs
-                self._add_to_queue(self._convert_to_pubsub(metric))
-                if self.q.qsize() >= self.batch_size:
-                    self._send(self.batch_size)
+        converted_metric = self._convert_to_pubsub(metric)
+        self.avg_msg_size = (self.avg_msg_size + len(json.dumps(converted_metric))) / 2
+        logging.debug("Avg msg size: {}".format(self.avg_msg_size))
+        if self.backoff_enable:
+            if self.last_q_push + self.time_to_wait > int(time.time()):
+                logging.debug("IN BACK OFF - Queueing metric. "
+                              "fib seq #: {}, "
+                              "ttw: {}".format(self.backoff_current_fib, self.time_to_wait))
+                logging.debug("Current time: {}".format(int(time.time())))
+                logging.debug("Next Push: {}".format(self.last_q_push + self.time_to_wait))
+                self._add_to_queue(converted_metric)
             else:
-                # batch up by size of msgs
-                tmp_msg = self._convert_to_pubsub(metric)
-                self.msg_total_size += len(json.dumps(tmp_msg))
-                self.msg_count += 1
-                avg_size = self.msg_total_size / self.msg_count
-                self._add_to_queue(tmp_msg)
+                self._add_to_queue(converted_metric)
+                self._process_queue()
+        else:
+            self._add_to_queue(converted_metric)
+            self._process_queue()
 
-                # predict next count based on current size and avg size
-                next_bytecount = avg_size + self.msg_total_size
-                logging.debug("Next dataframe size: %s | Avg size: %s" %
-                              (next_bytecount, avg_size))
+    def _process_queue(self):
+        """
+        Does the actual processing logic and sends messages to queue or pub/sub
+        :param metric: metric to process
+        """
+        # Make sure messages in queue are not staying past the max
+        # time they should.
+        current_time = int(time.time())
+        if current_time >= self.last_q_push + self.max_queue_time:
+            logging.info("Max queue time reached...pushing metrics.  "
+                         "Current time {}, Last push time {}, "
+                         "Max queue time {}".format(current_time,
+                                                    self.last_q_push,
+                                                    self.max_queue_time))
+            logging.debug("Queue size: {}  |  Batch size: {}"
+                          .format(self.q.qsize(), self.batch_size))
 
-                # add additional avg message size to cover msg envelope
-                # overhead
-                if next_bytecount >= \
-                        (self.batch_size - (avg_size * 2)):
-                    self._send(self.msg_count)
+            # Push the max we can to clear queue
+            if self.q.qsize() < HARD_LIMIT:
+                logging.debug("Qsize - Pushing {} metrics.".format(self.q.qsize()))
+                self._send(self.q.qsize())
+            else:
+                logging.debug("HardLimit - Pushing {} metrics.".format(HARD_LIMIT))
+                self._send(HARD_LIMIT)
+        else:
+            if self.batch is None:
+                # each metric sent as it comes in
+                self._send(1)
+            else:
+                # Safety measure to not overwhelm Pub/Sub.
+                if current_time - self.last_q_push >= self.safe_push:
+                    if self.batch == 'count':
+                        # batch up by number of msgs
+                        if self.q.qsize() >= self.batch_size:
+                            self._send(self.batch_size)
+                    else:
+                        num_to_send = int(self.batch_size / self.avg_msg_size) - self.msgs_to_cull
+                        if self.q.qsize() >= num_to_send:
+                            logging.debug("Number to send: {}".format(num_to_send))
+                            self._send(num_to_send)
+                else:
+                    logging.debug("Pausing....{} sec(s)"
+                                  .format(self.safe_push - (current_time - self.last_q_push)))
+
+        logging.debug("Queue size at end of process: {}".format(self.q.qsize()))
 
     def _add_to_queue(self, msg):
+        """
+        Adds metric to queue.
+        :param msg: metric to add to queue
+        """
         try:
             self.q.put_nowait(msg)
         except Queue.Full:
-            logging.fatal("Queue Full...raising error.")
-            raise Exception("Queue Full...please investigate!")
+            logging.error("Queue Full...please investigate!")
+            # raise Exception("Queue Full...please investigate!")
         except Exception, e:
             raise Exception("Exception: {}".format(e))
 
@@ -232,6 +272,17 @@ class PubsubHandler(Handler):
 
         return {'data': data}
 
+    def _fib(self, n):
+        """
+        Function takes in a number and returns the fibonacci sequence associated
+        with it.
+        :param n:  number you want fibonacci sequence of.
+        :return:  fibonacci sequence
+        """
+        if n == 1 or n == 2:
+            return 1
+        return self._fib(n - 1) + self._fib(n - 2)
+
     def _send(self, msg_num):
         """
         Send data to pub/sub.
@@ -252,13 +303,19 @@ class PubsubHandler(Handler):
             self.msg_total_size = 0
             # clear list
             del metrics[:]
-            self.last_q_push = int(time.time())
+            # clear back off
+            if self.backoff_enable:
+                logging.info("Clearing back off")
+                self.backoff_enable = False
+                self.backoff_current_fib = 1
         except Queue.Empty:
             logging.warn("Queue Empty caught")
             pass
         except Exception, e:
-            logging.error("Error sending event to Pub/Sub: %s", e)
+            logging.error("Error sending event to Pub/Sub: {}\n at time: {}"
+                          .format(e, int(time.time())))
             # put messages back on queue.
+            logging.debug("Putting messages not sent back on queue.")
             for m in metrics:
                 self._add_to_queue(m)
             # reset counters
@@ -266,9 +323,21 @@ class PubsubHandler(Handler):
             self.msg_total_size = 0
             # clear list
             del metrics[:]
-#            raise Exception("Error sending event to Pub/Sub : %s", e)
+            # manage back off
+            if self.backoff_enable:
+                if self.backoff_current_fib < self.backoff_max_fib:
+                    logging.debug("Incrementing back off")
+                    self.backoff_current_fib += 1
+            else:
+                logging.info("Enabling back off")
+                self.backoff_enable = True
+            # raise Exception("Error sending event to Pub/Sub : %s", e)
 
-        logging.debug("Queue size ending send: {}".format(self.q.qsize()))
+        finally:
+            logging.info("Resetting last push time to {}".format(int(time.time())))
+            self.last_q_push = int(time.time())  # reset last time tried to send
+            logging.debug("Queue size at end of send: {}".format(self.q.qsize()))
+            self.time_to_wait = int(self._fib(self.backoff_current_fib)) * 60
 
     def _close(self):
         """
@@ -278,3 +347,4 @@ class PubsubHandler(Handler):
 
     def __del__(self):
         self._close()
+
