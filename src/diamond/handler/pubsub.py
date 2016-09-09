@@ -113,6 +113,7 @@ class PubsubHandler(Handler):
         self.q = Queue.Queue(self.max_queue_size)
         self.last_q_push = int(time.time())
         self.time_to_wait = 0
+        self.send_max = self.config['send_max']
 
         # Back-off vars
         self.backoff_enable = False
@@ -144,6 +145,7 @@ class PubsubHandler(Handler):
             'max_fibonacci': 'Max value used to generate fibonacci number',
             'safe_push': 'Min secs between pushes to Pub/Sub',
             'msgs_to_cull': 'Number of msgs to remove from send window for overhead',
+            'send_max': 'Send the HARD_LIMIT max amount if that many exists in queue',
             'tags': 'Comma separated free-form field to hold additional'
                     ' key/value pairs to be sent.',
         })
@@ -167,6 +169,7 @@ class PubsubHandler(Handler):
             'max_fibonacci': 10,
             'safe_push': 6,
             'msgs_to_cull': 5,
+            'send_max': False,
             'tags': ''
         })
 
@@ -226,15 +229,20 @@ class PubsubHandler(Handler):
             else:
                 # Safety measure to not overwhelm Pub/Sub.
                 if current_time - self.last_q_push >= self.safe_push:
-                    if self.batch == 'count':
-                        # batch up by number of msgs
-                        if self.q.qsize() >= self.batch_size:
-                            self._send(self.batch_size)
+                    if self.send_max and self.q.qsize() >= HARD_LIMIT:
+                        logging.debug("Send Max set to true so sending "
+                                      "{} metrics".format(HARD_LIMIT))
+                        self._send(HARD_LIMIT)
                     else:
-                        num_to_send = int(self.batch_size / self.avg_msg_size) - self.msgs_to_cull
-                        if self.q.qsize() >= num_to_send:
-                            logging.debug("Number to send: {}".format(num_to_send))
-                            self._send(num_to_send)
+                        if self.batch == 'count':
+                            # batch up by number of msgs
+                            if self.q.qsize() >= self.batch_size:
+                                self._send(self.batch_size)
+                        else:
+                            num_to_send = int(self.batch_size / self.avg_msg_size) - self.msgs_to_cull
+                            if self.q.qsize() >= num_to_send:
+                                logging.debug("Number to send: {}".format(num_to_send))
+                                self._send(num_to_send)
                 else:
                     logging.debug("Pausing....{} sec(s)"
                                   .format(self.safe_push - (current_time - self.last_q_push)))
