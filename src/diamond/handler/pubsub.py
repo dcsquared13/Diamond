@@ -75,10 +75,10 @@ class PubsubHandler(Handler):
         Handler.__init__(self, config)
 
         if discovery is None:
-            logging.error("Failed to load apiclient.discovery")
+            logging.error("[PubsubHandler] Failed to load apiclient.discovery")
             return
         elif GoogleCredentials is None:
-            logging.error("Failed to load "
+            logging.error("[PubsubHandler] Failed to load "
                           "oauth2client.client.GoogleCredentials")
             return
 
@@ -106,7 +106,7 @@ class PubsubHandler(Handler):
         if self.batch == 'count':
             if self.batch_size > HARD_LIMIT:
                 self.batch_size = HARD_LIMIT
-                logging.warning("Batch message count set too high, "
+                logging.warning("[PubsubHandler] Batch message count set too high, "
                                 "changed to {}".format(HARD_LIMIT))
 
         # Initialize Queue
@@ -182,14 +182,16 @@ class PubsubHandler(Handler):
         """
         converted_metric = self._convert_to_pubsub(metric)
         self.avg_msg_size = (self.avg_msg_size + len(json.dumps(converted_metric))) / 2
-        logging.debug("Avg msg size: {}".format(self.avg_msg_size))
+        logging.debug("[PubsubHandler] Avg msg size: {}".format(self.avg_msg_size))
         if self.backoff_enable:
             if self.last_q_push + self.time_to_wait > int(time.time()):
-                logging.debug("IN BACK OFF - Queueing metric. "
+                logging.debug("[PubsubHandler] IN BACK OFF - Queueing metric. "
                               "fib seq #: {}, "
                               "ttw: {}".format(self.backoff_current_fib, self.time_to_wait))
-                logging.debug("Current time: {}".format(int(time.time())))
-                logging.debug("Next Push: {}".format(self.last_q_push + self.time_to_wait))
+                logging.debug("[PubsubHandler] Current time: {}"
+                              .format(int(time.time())))
+                logging.debug("[PubsubHandler] Next Push: {}"
+                              .format(self.last_q_push + self.time_to_wait))
                 self._add_to_queue(converted_metric)
             else:
                 self._add_to_queue(converted_metric)
@@ -207,20 +209,22 @@ class PubsubHandler(Handler):
         # time they should.
         current_time = int(time.time())
         if current_time >= self.last_q_push + self.max_queue_time:
-            logging.info("Max queue time reached...pushing metrics.  "
+            logging.info("[PubsubHandler] Max queue time reached...pushing metrics.  "
                          "Current time {}, Last push time {}, "
                          "Max queue time {}".format(current_time,
                                                     self.last_q_push,
                                                     self.max_queue_time))
-            logging.debug("Queue size: {}  |  Batch size: {}"
+            logging.debug("[PubsubHandler] Queue size: {}  |  Batch size: {}"
                           .format(self.q.qsize(), self.batch_size))
 
             # Push the max we can to clear queue
             if self.q.qsize() < HARD_LIMIT:
-                logging.debug("Qsize - Pushing {} metrics.".format(self.q.qsize()))
+                logging.debug("[PubsubHandler] Qsize - Pushing {} metrics."
+                              .format(self.q.qsize()))
                 self._send(self.q.qsize())
             else:
-                logging.debug("HardLimit - Pushing {} metrics.".format(HARD_LIMIT))
+                logging.debug("[PubsubHandler] HardLimit - Pushing {} metrics."
+                              .format(HARD_LIMIT))
                 self._send(HARD_LIMIT)
         else:
             if self.batch is None:
@@ -230,7 +234,7 @@ class PubsubHandler(Handler):
                 # Safety measure to not overwhelm Pub/Sub.
                 if current_time - self.last_q_push >= self.safe_push:
                     if self.send_max and self.q.qsize() >= HARD_LIMIT:
-                        logging.debug("Send Max set to true so sending "
+                        logging.debug("[PubsubHandler] Send Max set to true so sending "
                                       "{} metrics".format(HARD_LIMIT))
                         self._send(HARD_LIMIT)
                     else:
@@ -241,13 +245,15 @@ class PubsubHandler(Handler):
                         else:
                             num_to_send = int(self.batch_size / self.avg_msg_size) - self.msgs_to_cull
                             if self.q.qsize() >= num_to_send:
-                                logging.debug("Number to send: {}".format(num_to_send))
+                                logging.debug("[PubsubHandler] Number to send: {}"
+                                              .format(num_to_send))
                                 self._send(num_to_send)
                 else:
-                    logging.debug("Pausing....{} sec(s)"
+                    logging.debug("[PubsubHandler] Pausing....{} sec(s)"
                                   .format(self.safe_push - (current_time - self.last_q_push)))
 
-        logging.debug("Queue size at end of process: {}".format(self.q.qsize()))
+        logging.debug("[PubsubHandler] Queue size at end of process: {}"
+                      .format(self.q.qsize()))
 
     def _add_to_queue(self, msg):
         """
@@ -257,10 +263,10 @@ class PubsubHandler(Handler):
         try:
             self.q.put_nowait(msg)
         except Queue.Full:
-            logging.error("Queue Full...please investigate!")
+            logging.error("[PubsubHandler] Queue Full...please investigate!")
             # raise Exception("Queue Full...please investigate!")
         except Exception, e:
-            raise Exception("Exception: {}".format(e))
+            raise Exception("[PubsubHandler] Exception: {}".format(e))
 
     def _convert_to_pubsub(self, metric):
         """
@@ -295,7 +301,8 @@ class PubsubHandler(Handler):
         """
         Send data to pub/sub.
         """
-        logging.debug("Queue size beginning send: {}".format(self.q.qsize()))
+        logging.debug("[PubsubHandler] Queue size beginning send: {}"
+                      .format(self.q.qsize()))
         metrics = []
         try:
             for i in range(msg_num):
@@ -304,8 +311,8 @@ class PubsubHandler(Handler):
 
             resp = self.client.projects().topics().publish(
                 topic=self.topic, body=body).execute(num_retries=self.retries)
-            logging.info("Number of messages being sent: %s", len(metrics))
-            logging.debug("Size of message batch being sent: %s",
+            logging.info("[PubsubHandler] Number of messages being sent: %s", len(metrics))
+            logging.debug("[PubsubHandler] Size of message batch being sent: %s",
                           len(json.dumps(body)))
             self.msg_count = 0
             self.msg_total_size = 0
@@ -313,17 +320,17 @@ class PubsubHandler(Handler):
             del metrics[:]
             # clear back off
             if self.backoff_enable:
-                logging.info("Clearing back off")
+                logging.info("[PubsubHandler] Clearing back off.")
                 self.backoff_enable = False
                 self.backoff_current_fib = 1
         except Queue.Empty:
-            logging.warn("Queue Empty caught")
+            logging.warn("[PubsubHandler] Queue Empty caught")
             pass
         except Exception, e:
-            logging.error("Error sending event to Pub/Sub: {}\n at time: {}"
+            logging.error("[PubsubHandler] Error sending event to Pub/Sub: {}\n at time: {}"
                           .format(e, int(time.time())))
             # put messages back on queue.
-            logging.debug("Putting messages not sent back on queue.")
+            logging.debug("[PubsubHandler] Putting messages not sent back on queue.")
             for m in metrics:
                 self._add_to_queue(m)
             # reset counters
@@ -334,17 +341,17 @@ class PubsubHandler(Handler):
             # manage back off
             if self.backoff_enable:
                 if self.backoff_current_fib < self.backoff_max_fib:
-                    logging.debug("Incrementing back off")
+                    logging.debug("[PubsubHandler] Incrementing back off")
                     self.backoff_current_fib += 1
             else:
-                logging.info("Enabling back off")
+                logging.info("[PubsubHandler] Enabling back off")
                 self.backoff_enable = True
             # raise Exception("Error sending event to Pub/Sub : %s", e)
 
         finally:
-            logging.info("Resetting last push time to {}".format(int(time.time())))
+            logging.info("[PubsubHandler] Resetting last push time to {}".format(int(time.time())))
             self.last_q_push = int(time.time())  # reset last time tried to send
-            logging.debug("Queue size at end of send: {}".format(self.q.qsize()))
+            logging.debug("[PubsubHandler] Queue size at end of send: {}".format(self.q.qsize()))
             self.time_to_wait = int(self._fib(self.backoff_current_fib)) * 60
 
     def _close(self):
