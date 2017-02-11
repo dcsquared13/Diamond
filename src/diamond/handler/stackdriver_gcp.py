@@ -69,6 +69,16 @@ class StackdriverGCPHandler(Handler):
         # Initialize options
         self.project_resource = "projects/{0}".format(self.config["project_id"])
         self.instance_type = self.config['instance_type']
+        self.project_id = self.config["project_id"]
+        self.aws_account = self.config["aws_account_id"]
+        self.zone = self.config["zone"]
+
+        # Set cloud type...currently AWS or GCP
+        if self.instance_type == 'aws_ec2_instance':
+            self.cloud = 'AWS'
+        else:
+            self.cloud = 'GCP'
+
         self.batch_size = int(self.config['batch_size'])
         self.blacklist = []
         tags_items = self.config['tags']
@@ -77,6 +87,7 @@ class StackdriverGCPHandler(Handler):
             for item in tags_items:
                 k, v = item.split(':')
                 self.tags[k] = v
+        self.tags['fqdn'] = self.config["fqdn"]
 
         if self.config['blacklist']:
             if type(self.config['blacklist']) is not list:
@@ -87,10 +98,18 @@ class StackdriverGCPHandler(Handler):
                 logging.debug("[StackdriverGCPHandler] Blacklist passed in as list.")
                 self.blacklist = self.config['blacklist']
 
-        # Initialize Queue
+        # Initialize metrics Queue
         self.q = Queue.PriorityQueue(int(self.config['max_queue_size']))
         self.last_q_push = int(time.time())
         self.queue_buffer_time = self.config['queue_buffer_time']
+        self.queue_flush_time = 30
+
+        # Initialize resend Queue
+        self.resend_q = Queue.PriorityQueue(1000)
+        self.resend_buffer_time = 3600  # 1 hr
+
+        # Game the system vars
+        self.gts = self.config['gts']
 
         # Statistics
         self.statistics = self.config['statistics']
@@ -112,6 +131,9 @@ class StackdriverGCPHandler(Handler):
             'tags': 'Tags',
             'blacklist': 'Blacklist of collectors to not process',
             'statistics': 'Get stats',
+            'gts': 'Game the system',
+            'aws_account_id': 'AWS account id (if applicable)',
+            'fqdn': 'Fully Qualified Domain Name',
         })
 
         return config
@@ -127,10 +149,13 @@ class StackdriverGCPHandler(Handler):
             'instance_type': 'gce_instance',
             'batch_size': 1,
             'max_queue_size': 10000,
-            'queue_buffer_time': 120,
+            'queue_buffer_time': 600,
             'tags': None,
             'blacklist': None,
             'statistics': False,
+            'gts': False,
+            'aws_account_id': None,
+            'fqdn': 'somewhere.over.the.rainbow',
         })
 
         return config
@@ -160,40 +185,79 @@ class StackdriverGCPHandler(Handler):
         Creates a Stackdriver timeseries out of a metric object.
         :param metric: Metric object
         """
-        path = '%s/%s' % (metric.getCollectorPath().replace(".", "/"),
-                          metric.getMetricPath().replace(".", "/"))
+        path = metric.getMetricPath().replace(".", "_")
+        path = path.replace("-", "_")
+        path = path.replace("/", "_")
+        path = path.replace(":", "_")
         metric_time = self._format_rfc3339(
             datetime.datetime.fromtimestamp(metric.timestamp))
-        custom_metric_type = "custom.googleapis.com/{}".format(path)
+        #custom_metric_type = "custom.googleapis.com/store_test/{}".format(path)
+        #fixed_cmt = custom_metric_type[:100] if len(custom_metric_type) > 75 else custom_metric_type
         if metric.tags is not None:
             self.tags.update(metric.tags)
-        zone = self.tags.get("zone", "us-central1-a")
         tags = self._remove_tags(self.tags)
+        #tags['metric'] = path
+        tags['metric'] = metric.getMetricPath()
+        if self.gts:
+            ts_type = "custom.googleapis.com/unknown"
+            if metric.metric_type.lower() in ["counter", "gauge"]:
+                ts_type = "custom.googleapis.com/{}".format(metric.metric_type.lower())
+        else:
+            ts_type = "custom.googleapis.com/{}".format(path)
 
-        timeseries_data = {
-            "metric": {
-                "type": custom_metric_type,
-                "labels": tags
-            },
-            "resource": {
-                "type": self.instance_type,
-                "labels": {
-                    'instance_id': metric.host,
-                    'zone': zone
-                }
-            },
-            "points": [
-                {
-                    "interval": {
-                        "startTime": metric_time,
-                        "endTime": metric_time
-                    },
-                    "value": {
-                        "doubleValue": metric.value
+        if self.cloud == "AWS":
+            timeseries_data = {
+                "metric": {
+                    "type": ts_type,
+                    "labels": tags,
+                },
+                "resource": {
+                    "type": self.instance_type,
+                    "labels": {
+                        'project_id': self.project_id,
+                        'aws_account': self.aws_account,
+                        'instance_id': metric.host,
+                        'region': 'aws:{}'.format(self.zone),
                     }
-                }
-            ]
-        }
+                },
+                "points": [
+                    {
+                        "interval": {
+                            "startTime": metric_time,
+                            "endTime": metric_time
+                        },
+                        "value": {
+                            "doubleValue": metric.value
+                        }
+                    }
+                ]
+            }
+        else:   # For now just GCP
+            timeseries_data = {
+                "metric": {
+                    "type": ts_type,
+                    "labels": tags,
+                },
+                "resource": {
+                    "type": self.instance_type,
+                    "labels": {
+                        'project_id': self.project_id,
+                        'instance_id': metric.host,
+                        'zone': self.zone,
+                    }
+                },
+                "points": [
+                    {
+                        "interval": {
+                            "startTime": metric_time,
+                            "endTime": metric_time
+                        },
+                        "value": {
+                            "doubleValue": metric.value
+                        }
+                    }
+                ]
+            }
 
         return timeseries_data
 
@@ -203,6 +267,25 @@ class StackdriverGCPHandler(Handler):
         credentials = GoogleCredentials.get_application_default()
         client = discovery.build('monitoring', 'v3', credentials=credentials)
         return client
+
+    def _resend(self):
+        """Tries to re-send timeseries that failed."""
+        for i in range(self.resend_q.qsize()):
+            ts_metric = self.resend_q.get_nowait()
+            try:
+                body = {'timeSeries': ts_metric[1]}
+                client = self._get_client()
+                request = client.projects().timeSeries().create(
+                    name=self.project_resource, body=body)
+                request.execute()
+                logging.info("[StackdriverGCPHandler] {} custom metrics re-sent successfully")
+                logging.debug("[StackdriverGCPHandler] timeseries sent: {}"
+                              .format(body))
+            except Exception, e:
+                # put back on resend queue.
+                self.resend_q.put_nowait(ts_metric)
+                logging.error("[StackdriverGCPHandler] Error sending metrics: {}"
+                              .format(e))
 
     def _send(self, num):
         """
@@ -228,11 +311,15 @@ class StackdriverGCPHandler(Handler):
             logging.debug("[StackdriverGCPHandler] timeseries sent: {}"
                           .format(body))
         except Exception, e:
-            # put back on queue.
-            for i in range(len(metrics)):
-                self.q.put_nowait(metrics[i])
+            # TODO: need to put logic in for resending.  Stackdriver will send the ones
+            # that don't error so we should only retry the ones that do in the block.
+            # For now just drop so we don't throw tons of errors resending the ones that worked.
+            # put on resend queue.
+            # self.resend_q.put_nowait(ts_metrics)
             logging.error("[StackdriverGCPHandler] Error sending metrics: {}"
                           .format(e))
+            logging.debug("[StackdriverGCPHandler] Metric that errored: {}"
+                          .format(ts_metrics))
         finally:
             # clear list
             del metrics[:]
@@ -262,23 +349,42 @@ class StackdriverGCPHandler(Handler):
 
     def _flush_expired_metrics(self):
         """
-        Flush expired metrics from the queue.
+        Flush expired metrics from the queues.
         """
-        cutoff_time = time.time() - self.queue_buffer_time
-        flush = True
-        while flush:
-            metric = self.q.get_nowait()
-            metric_ts = metric[0]
-            if metric_ts > cutoff_time:
-                # first metric is good, put back on queue and end flush
-                # otherwise drop metric and pull next.
-                self.q.put_nowait(metric)
-                flush = False
-                logging.debug("[StackdriverGCPHandler] Nothing to flush.")
-            else:
-                # Flush this #2 away
-                logging.debug("[StackdriverGCPHandler] flushing {}."
-                              .format(metric))
+
+        # Expire out the metrics queue
+        if self.q.qsize() > 0:
+            cutoff_time = time.time() - self.queue_buffer_time
+            flush = True
+            while flush:
+                metric = self.q.get_nowait()
+                metric_ts = metric[0]
+                if metric_ts > cutoff_time:
+                    # first metric is good, put back on queue and end flush
+                    # otherwise drop metric and pull next.
+                    self.q.put_nowait(metric)
+                    flush = False
+                    logging.debug("[StackdriverGCPHandler] Metric Queue nothing to flush.")
+                else:
+                    # Flush this #2 away
+                    logging.debug("[StackdriverGCPHandler] Metric Queue flushing {}."
+                                  .format(metric))
+
+        # Expire out the resend queue
+        if self.resend_q.qsize() > 0:
+            resend_cutoff_time = time.time() - self.resend_buffer_time
+            flush = True
+            while flush:
+                ts_metric = self.resend_q.get_nowait()
+                ts_metric_ts = ts_metric[0]
+                if ts_metric_ts > resend_cutoff_time:
+                    self.resend_q.put_nowait(ts_metric)
+                    flush = False
+                    logging.debug("[StackdriverGCPHandler] Resend Queue nothing to flush.")
+                else:
+                    # Flush this #2 away
+                    logging.debug("[StackdriverGCPHandler] Resend Queue flushing {}."
+                                  .format(ts_metric))
 
     def _add_to_queue(self, ts, msg):
         """
@@ -309,13 +415,24 @@ class StackdriverGCPHandler(Handler):
         when necessary conditions met.
         """
         self._flush_expired_metrics()
+
         if self.q.qsize() >= self.batch_size:
+            # First try to resend any failed timeseries
+            if self.resend_q.qsize() > 0:
+                self._resend()
+
+            # Now try to send current metrics
             logging.debug("[StackdriverGCPHandler] Sending {} metrics to Stackdriver."
                           .format(self.batch_size))
             self._send(self.batch_size)
         else:
             logging.debug("[StackdriverGCPHandler] qsize {}, batch_size {}"
                           .format(self.q.qsize(), self.batch_size))
+
+            # See if we need to flush metrics
+            flush_time = time.time() - self.last_q_push
+            if flush_time > self.queue_flush_time:
+                self._send(self.q.qsize())
 
     def process(self, metric):
         """
