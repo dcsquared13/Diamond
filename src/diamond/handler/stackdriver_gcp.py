@@ -72,6 +72,7 @@ class StackdriverGCPHandler(Handler):
         self.project_id = self.config["project_id"]
         self.aws_account = self.config["aws_account_id"]
         self.zone = self.config["zone"]
+        self.instance_id = self.config["instance_id"]
 
         # Set cloud type...currently AWS or GCP
         if self.instance_type == 'aws_ec2_instance':
@@ -134,6 +135,7 @@ class StackdriverGCPHandler(Handler):
             'gts': 'Game the system',
             'aws_account_id': 'AWS account id (if applicable)',
             'fqdn': 'Fully Qualified Domain Name',
+            'instance_id': 'Instance ID of the VM',
         })
 
         return config
@@ -156,6 +158,7 @@ class StackdriverGCPHandler(Handler):
             'gts': False,
             'aws_account_id': None,
             'fqdn': 'somewhere.over.the.rainbow',
+            'instance_id': None,
         })
 
         return config
@@ -198,6 +201,10 @@ class StackdriverGCPHandler(Handler):
         tags = self._remove_tags(self.tags)
         #tags['metric'] = path
         tags['metric'] = metric.getMetricPath()
+        if self.instance_id is not None:
+            instance_id = self.instance_id
+        else:
+            instance_id = metric.host
         if self.gts:
             ts_type = "custom.googleapis.com/unknown"
             if metric.metric_type.lower() in ["counter", "gauge"]:
@@ -216,7 +223,7 @@ class StackdriverGCPHandler(Handler):
                     "labels": {
                         'project_id': self.project_id,
                         'aws_account': self.aws_account,
-                        'instance_id': metric.host,
+                        'instance_id': instance_id,
                         'region': 'aws:{}'.format(self.zone),
                     }
                 },
@@ -242,7 +249,7 @@ class StackdriverGCPHandler(Handler):
                     "type": self.instance_type,
                     "labels": {
                         'project_id': self.project_id,
-                        'instance_id': metric.host,
+                        'instance_id': instance_id,
                         'zone': self.zone,
                     }
                 },
