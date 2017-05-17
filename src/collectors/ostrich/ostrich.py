@@ -75,13 +75,11 @@ class OstrichCollector(diamond.collector.Collector):
             try:
                 float(v)
                 metric_value = v
-                if "counters" in metric_name:
-                    self.publish_counter(metric_name, metric_value)
-                elif "labels" in metric_name:
+                if "labels" in metric_name:
                     # Drop it as we don't need to push labels to timeseries databases.
                     pass
                 else:
-                    # Everything else is a gauge
+                    # Everything else is a gauge (including counters for us)
                     self.publish(metric_name, metric_value)
             except ValueError:
                 pass
