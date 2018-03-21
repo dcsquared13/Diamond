@@ -38,7 +38,7 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
     c.vm.box_url = "http://opscode-vm-bento.s3.amazonaws.com/vagrant/virtualbox/opscode_ubuntu-12.04_chef-provisionerless.box"
   
     c.vm.provision "shell", inline: "sudo apt-get update"  
-    c.vm.provision "shell", inline: "sudo apt-get install -y make git pbuilder python-mock python-configobj python-support cdbs"
+    c.vm.provision "shell", inline: "sudo apt-get install -y make git pbuilder python-mock python-configobj dh-python cdbs"
     c.vm.provision "shell", inline: "cp -rf /vagrant /tmp/Diamond"  
     c.vm.provision "shell", inline: "cd /tmp/Diamond && make deb"
     c.vm.provision "shell", inline: "mkdir -p /vagrant/dist/deb && (cp -f /tmp/Diamond/build/*.deb /vagrant/dist/deb/ || grep -v 'cannot stat')"
